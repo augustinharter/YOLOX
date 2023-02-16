@@ -154,7 +154,8 @@ class YOLOXHead(nn.Module):
             reg_x = x
 
             cls_feat = cls_conv(cls_x)
-            cls_output = self.cls_preds[k](cls_feat)
+            cls_output = None
+            #cls_output = self.cls_preds[k](cls_feat)
 
             reg_feat = reg_conv(reg_x)
             reg_output = self.reg_preds[k](reg_feat)
@@ -185,7 +186,8 @@ class YOLOXHead(nn.Module):
 
             else:
                 output = torch.cat(
-                    [reg_output, obj_output.sigmoid(), cls_output.sigmoid()], 1
+                    #[reg_output, obj_output.sigmoid(), cls_output.sigmoid()], 1
+                    [reg_output, obj_output.sigmoid(), reg_feat, cls_feat], 1
                 )
 
             outputs.append(output)

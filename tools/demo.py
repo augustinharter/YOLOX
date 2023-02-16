@@ -10,6 +10,7 @@ from loguru import logger
 import cv2
 
 import torch
+os.environ["PYTHONPATH"] = "/home/augo/coding/keepa/ml/YOLOX/."
 
 from yolox.data.data_augment import ValTransform
 from yolox.data.datasets import COCO_CLASSES
@@ -145,8 +146,17 @@ class Predictor(object):
         ratio = min(self.test_size[0] / img.shape[0], self.test_size[1] / img.shape[1])
         img_info["ratio"] = ratio
 
+        print('img.shape', img.shape, 'test size', self.test_size)
         img, _ = self.preproc(img, None, self.test_size)
         img = torch.from_numpy(img).unsqueeze(0)
+        #print('img after preproc:', img.shape, img.max(), img.min(), img[0].flatten(1).std(), img.flatten(1).mean())
+        print('img after preproc:', 
+            img.shape, '\n max:', 
+            img.max(), '\n min:', 
+            img.min(), '\n std:',
+            img[0].flatten(1).std(), '\n mean:',
+            img.flatten(1).mean()
+        )
         img = img.float()
         if self.device == "gpu":
             img = img.cuda()
@@ -155,13 +165,20 @@ class Predictor(object):
 
         with torch.no_grad():
             t0 = time.time()
+            #print('img.shape', img.shape)
             outputs = self.model(img)
+            print('outputs first 3 10', outputs[0][:3, :10])
+            #print('DECODER', self.decoder)
+            #print('outputs', outputs.shape, outputs[0].flatten().sort(descending=True).values[:100])
             if self.decoder is not None:
                 outputs = self.decoder(outputs, dtype=outputs.type())
+            #print('NUM CLASSES, TEST CONF, NMSTHRESH',self.num_classes, self.confthre, self.nmsthre)
             outputs = postprocess(
                 outputs, self.num_classes, self.confthre,
                 self.nmsthre, class_agnostic=True
             )
+            #print('outputs', outputs[0].shape, outputs[0][0].flatten().sort(descending=True).values[:100])
+            print('postprocess first 3', outputs[0][:3])
             logger.info("Infer time: {:.4f}s".format(time.time() - t0))
         return outputs, img_info
 
@@ -171,6 +188,7 @@ class Predictor(object):
         if output is None:
             return img
         output = output.cpu()
+        print("ratio", ratio)
 
         bboxes = output[:, 0:4]
 
@@ -265,6 +283,7 @@ def main(exp, args):
     if args.tsize is not None:
         exp.test_size = (args.tsize, args.tsize)
 
+    print(exp)
     model = exp.get_model()
     logger.info("Model Summary: {}".format(get_model_info(model, exp.test_size)))
 
