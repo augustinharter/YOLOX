@@ -12,6 +12,7 @@ from collections import ChainMap, defaultdict
 from loguru import logger
 from tabulate import tabulate
 from tqdm import tqdm
+from itertools import islice
 
 import numpy as np
 
@@ -131,8 +132,9 @@ class COCOEvaluator:
             ap50 (float) : COCO AP of IoU=50
             summary (sr): summary info of evaluation.
         """
+        self.dataloader = self.dataloader
         # TODO half to amp_test
-        tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
+        tensor_type = (torch.cuda.HalfTensor if half else torch.cuda.FloatTensor) if torch.cuda.is_available() else torch.Tensor
         model = model.eval()
         if half:
             model = model.half()
@@ -155,9 +157,9 @@ class COCOEvaluator:
             model(x)
             model = model_trt
 
-        for cur_iter, (imgs, _, info_imgs, ids) in enumerate(
+        for cur_iter, (imgs, _, info_imgs, ids) in islice(enumerate(
             progress_bar(self.dataloader)
-        ):
+        ), 10):
             with torch.no_grad():
                 imgs = imgs.type(tensor_type)
 
@@ -186,7 +188,8 @@ class COCOEvaluator:
             data_list.extend(data_list_elem)
             output_data.update(image_wise_data)
 
-        statistics = torch.cuda.FloatTensor([inference_time, nms_time, n_samples])
+        statistics = torch.cuda.FloatTensor([inference_time, nms_time, n_samples]) if torch.cuda.is_available() \
+                else torch.Tensor([inference_time, nms_time, n_samples])
         if distributed:
             # different process/device might have different speed,
             # to make sure the process will not be stucked, sync func is used here.

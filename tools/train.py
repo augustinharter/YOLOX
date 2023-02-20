@@ -89,6 +89,11 @@ def make_parser():
         default="tensorboard"
     )
     parser.add_argument(
+        "-cpu",
+        help="use GPU",
+        action="store_true",
+    )
+    parser.add_argument(
         "opts",
         help="Modify config options using the command-line",
         default=None,

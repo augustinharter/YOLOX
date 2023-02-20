@@ -147,14 +147,15 @@ def main(exp, args, num_gpu):
 
     model = exp.get_model()
     logger.info("Model Summary: {}".format(get_model_info(model, exp.test_size)))
-    logger.info("Model Structure:\n{}".format(str(model)))
+    #logger.info("Model Structure:\n{}".format(str(model)))
 
     evaluator = exp.get_evaluator(args.batch_size, is_distributed, args.test, args.legacy)
     evaluator.per_class_AP = True
     evaluator.per_class_AR = True
 
-    torch.cuda.set_device(rank)
-    model.cuda(rank)
+    if num_gpu>0:
+        torch.cuda.set_device(rank)
+        model.cuda(rank)
     model.eval()
 
     if not args.speed and not args.trt:
@@ -163,7 +164,7 @@ def main(exp, args, num_gpu):
         else:
             ckpt_file = args.ckpt
         logger.info("loading checkpoint from {}".format(ckpt_file))
-        loc = "cuda:{}".format(rank)
+        loc = "cuda:{}".format(rank) if num_gpu>0 else "cpu"
         ckpt = torch.load(ckpt_file, map_location=loc)
         model.load_state_dict(ckpt["model"])
         logger.info("loaded checkpoint done.")
@@ -206,6 +207,7 @@ if __name__ == "__main__":
         args.experiment_name = exp.exp_name
 
     num_gpu = torch.cuda.device_count() if args.devices is None else args.devices
+    print('NUM GPUS', num_gpu)
     assert num_gpu <= torch.cuda.device_count()
 
     dist_url = "auto" if args.dist_url is None else args.dist_url

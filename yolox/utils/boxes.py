@@ -30,7 +30,7 @@ def filter_box(output, scale_range):
 
 
 def postprocess(prediction, num_classes, conf_thre=0.7, nms_thre=0.45, class_agnostic=False):
-    print('out stats:', 
+    '''print('out stats:', 
         prediction[0].shape, '\n max:', 
         prediction[0].max(), '\n min:', 
         prediction[0].min(), '\n std classes :',
@@ -38,7 +38,7 @@ def postprocess(prediction, num_classes, conf_thre=0.7, nms_thre=0.45, class_agn
         prediction[0][:,5:].flatten().mean(), '\n boxes:',
         prediction[0][:,:4].flatten().std(),
         prediction[0][:,:4].flatten().mean(),
-    )
+    )'''
     box_corner = prediction.new(prediction.shape)
     box_corner[:, :, 0] = prediction[:, :, 0] - prediction[:, :, 2] / 2
     box_corner[:, :, 1] = prediction[:, :, 1] - prediction[:, :, 3] / 2
