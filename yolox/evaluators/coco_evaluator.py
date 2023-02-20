@@ -159,7 +159,7 @@ class COCOEvaluator:
 
         for cur_iter, (imgs, _, info_imgs, ids) in islice(enumerate(
             progress_bar(self.dataloader)
-        ), 10):
+        ), 700):
             with torch.no_grad():
                 imgs = imgs.type(tensor_type)
 
