@@ -10,6 +10,7 @@ import tempfile
 import time
 from collections import ChainMap, defaultdict
 from loguru import logger
+from pandas import infer_freq
 from tabulate import tabulate
 from tqdm import tqdm
 from itertools import islice
@@ -159,9 +160,10 @@ class COCOEvaluator:
 
         for cur_iter, (imgs, _, info_imgs, ids) in islice(enumerate(
             progress_bar(self.dataloader)
-        ), 700):
+        ), self.limit or 700):
             with torch.no_grad():
                 imgs = imgs.type(tensor_type)
+                #print(imgs.shape, imgs.dtype)
 
                 # skip the last iters since batchsize might be not enough for batch inference
                 is_time_record = cur_iter < len(self.dataloader) - 1
@@ -175,6 +177,7 @@ class COCOEvaluator:
                 if is_time_record:
                     infer_end = time_synchronized()
                     inference_time += infer_end - start
+                    #print("INFERENCE", infer_end-start)
 
                 outputs = postprocess(
                     outputs, self.num_classes, self.confthre, self.nmsthre
@@ -182,6 +185,7 @@ class COCOEvaluator:
                 if is_time_record:
                     nms_end = time_synchronized()
                     nms_time += nms_end - infer_end
+                    #print("NMS", nms_end - infer_end)
 
             data_list_elem, image_wise_data = self.convert_to_coco_format(
                 outputs, info_imgs, ids, return_outputs=True)

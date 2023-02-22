@@ -152,6 +152,7 @@ def main(exp, args, num_gpu):
     evaluator = exp.get_evaluator(args.batch_size, is_distributed, args.test, args.legacy)
     evaluator.per_class_AP = True
     evaluator.per_class_AR = True
+    evaluator.limit = None
 
     if num_gpu>0:
         torch.cuda.set_device(rank)
