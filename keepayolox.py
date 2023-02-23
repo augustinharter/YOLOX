@@ -1,4 +1,6 @@
 # %%
+import sklearn.neighbors as neighbors
+from pycocotools.coco import COCO
 from time import time
 from timeit import timeit
 from torchvision.ops import box_iou
@@ -21,8 +23,9 @@ import torchvision
 os.environ["PYTHONPATH"] = os.getcwd()
 # import bounding boxes drawer
 torch.set_printoptions(precision=2)
-from pycocotools.coco import COCO
 # %%
+
+
 def getBoxCornersFromCOCOBox(box):
     return (box[0], box[1], box[0]+box[2], box[1]+box[3])
 
@@ -161,11 +164,15 @@ print('img after normalize:',
       imgTensor.flatten(1).mean())
 print(imgTensor.shape)
 # %% VISUALIZE
+
+
 def vis_wrap(out, img, confthresh=0.3, showscore=True):
     boxImg = vis(np.ascontiguousarray(img, dtype=np.uint8), out[:, 0:4], out[:, 4],  # *out[:,5],
                  out[:, 6], conf=confthresh, class_names=COCO_CLASSES, showscore=showscore)
     plt.imshow(boxImg)
     plt.show()
+
+
 # %%
 # RUN MODELS
 '''
@@ -230,7 +237,8 @@ dataset = CocoDetection(
     annFile="/home/augo/data/COCO/annotations/instances_val2017.json",
     transforms=transforms
 )
-catLookup = dict([(c['id'],i) for (i,c) in enumerate(dataset.coco.loadCats(dataset.coco.getCatIds()))])
+catLookup = dict([(c['id'], i) for (i, c) in enumerate(
+    dataset.coco.loadCats(dataset.coco.getCatIds()))])
 # %%
 # make dataloader
 dataloader = DataLoader(
@@ -242,13 +250,13 @@ dataloader = DataLoader(
 # %%
 inTensor, _ = transforms(pilimg, [])
 img = np.copy(np.array(inTensor.permute(1, 2, 0).int()))
-#plt.imshow(img)
-#plt.show()
+# plt.imshow(img)
+# plt.show()
 out = jitmod(inTensor[None])
 print(out.shape, img.shape)
 #vis_wrap(out, img, confthresh=0.3)
 
-#%%
+# %%
 def calcMetrics(ious, preds, targets):
     # true prediciton, false prediction, void prediction, missing prediction
     tp, fp, vp, mp = 0, 0, 0, 0
@@ -268,13 +276,33 @@ def calcMetrics(ious, preds, targets):
     vp = len(preds[preds != -1])
     mp = len(targets[targets != -1])
     return tp, fp, vp, mp
+
+def matchDetections(boxes, tboxes, targets, iouthresh=0.5):
+    # calc ious
+    ious = box_iou(boxes, tboxes)
+    boxious[boxious < iouthresh] = 0
+    labels = np.ones(len(boxes), dtype=np.int32)*-1
+    # iterate over all predictions
+    for i in range(len(boxes)):
+        # check if there is a iou target for this prediction
+        if ious[i].any():
+            # get best targetidx
+            hitidx = ious[i].argmax()
+            # check if target is still available
+            if targets[hitidx] >= 0:
+                # save best target as label
+                labels[i] = targets[hitidx]
+                # TODO mark target as used??
+                #targets[hitidx] = -1
+    return labels
+
 # %%
 conftresh = 0.3
 iouthresh = 0.5
-precs, tps, fps, vps, mps = [], [], [], [], []
 timing = False
-times = []
 timestamp = time()
+mlx, mly = [], []
+precs, tps, fps, vps, mps = [], [], [], [], []
 with torch.no_grad():
     for i, (inputs, targets) in enumerate(dataloader):
         inTensor = torch.stack(inputs)
@@ -294,39 +322,74 @@ with torch.no_grad():
             tboxes = torch.Tensor([getBoxCornersFromCOCOBox(t['bbox']) for t in targets[0]])
             tconf = torch.Tensor([[1] for _ in targets[0]])
             tclasses = torch.Tensor([catLookup[t['category_id']] for t in targets[0]]).int()
-            tout = torch.cat([tboxes, tconf, tconf, tclasses[:,None]], dim=1)
+            tout = torch.cat([tboxes, tconf, tconf, tclasses[:, None]], dim=1)
             if timing:
                 print('batch', i, 'formating targets', time()-timestamp)
                 timestamp = time()
 
+            # collect ml train data
+            mlx.append(out.cpu().numpy())
+            mly.append(tout.cpu().numpy())
             #vis_wrap(out, img, confthresh=0.3)
             #vis_wrap(tout, img, confthresh=conftresh, showscore=False)
 
             boxious = box_iou(out[:, 0:4], tout[:, 0:4])
-            boxious[boxious<iouthresh] = 0
+            boxious[boxious < iouthresh] = 0
             if timing:
                 print('batch', i, 'calc IoUs', time()-timestamp)
                 timestamp = time()
+
+
+            tp, fp, vp, mp = calcMetrics(boxious, pclasses, tclasses)
+            if timing:
+                print('batch', i, 'calc metrics', time()-timestamp)
+                timestamp = time()
+            precs.append(tp/(tp+fp+vp+mp))
+            tps.append(tp)
+            fps.append(fp)
+            vps.append(vp)
+            mps.append(mp)
+            if i and not i % 50:
+                base = sum(tps+fps+vps+mps)
+                print(i, sum(tps), sum(fps), sum(vps), sum(mps),'avg prec:', round(sum(precs)/len(precs), 3), 'avg tp:', round(sum(tps)/base, 3), 'avg fp:',
+                        round(sum(fps)/base, 3), 'avg vp:', round(sum(vps)/base, 3), 'avg mp:', round(sum(mps)/base), end='\r')
         except IndexError as e:
             print(e, [t['bbox'] for t in targets[0]])
             continue
-        
-        #print(boxious)
-        tp, fp, vp, mp = calcMetrics(boxious, pclasses, tclasses)
-        if timing:
-            print('batch', i, 'calc metrics', time()-timestamp)
-            timestamp = time()
-        precs.append(tp/(tp+fp+vp+mp))
-        tps.append(tp)
-        fps.append(fp)
-        vps.append(vp)
-        mps.append(mp)
-        if i and not i%10:
-            base = sum(tps+fps+vps+mps)
-            print(i,'avg prec:', round(sum(precs)/len(precs), 3), 'avg tp:', round(sum(tps)/base, 3), 'avg fp:', round(sum(fps)/base, 3), 'avg vp:', round(sum(vps)/base, 3), 'avg mp:', round(sum(mps)/base))
-            print(sum(tps), sum(fps), sum(vps), sum(mps))
+np.save('mlx.npy', np.array(mlx, dtype=object))
+np.save('mly.npy', np.array(mly, dtype=object))
+#%% LOAD ML DATA
+mlx = np.load('mlx.npy', allow_pickle=True)
+mly = np.load('mly.npy', allow_pickle=True)
+cleanmask = [e.shape[0]>0 for e in mly]
+mlx = [mlx[i] for i in range(len(mlx)) if cleanmask[i]]
+mly = [mly[i] for i in range(len(mly)) if cleanmask[i]]
+#%% TRAIN ML
+knn = neighbors.KNeighborsClassifier(n_neighbors=5)
+train_percent = 0.05
+# get labels
+boxes = [e[:, 0:4] for e in mlx]
+tboxes = [e[:, 0:4] for e in mly]
+targets = [(e[:, 6]).astype(np.int32) for e in mly]
+# match detections
+labels = [matchDetections(torch.from_numpy(b), torch.from_numpy(tb), t, iouthresh=0.5) for b, tb, t in zip(boxes, tboxes, targets)]
+# flatten
+features = np.concatenate(mlx, axis=0)[:,7:]
+labels = np.concatenate(labels, axis=0)
+# split
+train_size = int(len(features) * train_percent)
+train_features = features[:train_size]
+train_labels = labels[:train_size]
+test_features = features[train_size:]
+test_labels = labels[train_size:]
+print(int(len(boxes)* train_percent), "train images for all 80 classes with",
+    len(train_features), "detections =>\n", len(train_features)/80, "detections per class")
+# train
+knn.fit(train_features, train_labels)
+# test
+print('score', knn.score(test_features, test_labels))
 # %% Seems like batching is not speeding it up
-nruns = 100
+nruns = 10
 inTensor = torch.rand(8, 3, 416, 416)
 #print(f'standard model {nruns} runs', timeit(lambda: model(inTensor), number=nruns))
 #print(f'jitmodel {nruns} runs', timeit(lambda: jitmod(inTensor), number=nruns))
