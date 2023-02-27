@@ -46,6 +46,7 @@ class Trainer:
         self.amp_training = args.fp16
         self.scaler = torch.cuda.amp.GradScaler(enabled=args.fp16)
         self.is_distributed = get_world_size() > 1
+        print('is distributed?', get_world_size())
         self.rank = get_rank()
         self.local_rank = get_local_rank()
         self.device = "cuda:{}".format(self.local_rank) if not args.cpu else "cpu"
@@ -95,7 +96,7 @@ class Trainer:
     def train_one_iter(self):
         iter_start_time = time.time()
 
-        inps, targets = self.prefetcher.next()
+        inps, targets = next(self.prefetcher)[:2] if self.args.cpu else self.prefetcher.next()
         inps = inps.to(self.data_type)
         targets = targets.to(self.data_type)
         targets.requires_grad = False
@@ -155,7 +156,7 @@ class Trainer:
             cache_img=self.args.cache,
         )
         logger.info("init prefetcher, this might take one minute or less...")
-        self.prefetcher = DataPrefetcher(self.train_loader)
+        self.prefetcher = DataPrefetcher(self.train_loader) if not self.args.cpu else iter(self.train_loader)
         # max_iter means iters per epoch
         self.max_iter = len(self.train_loader)
 

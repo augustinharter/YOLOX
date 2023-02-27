@@ -40,10 +40,13 @@ class Exp(BaseExp):
         self.data_dir = None
         # name of annotation file for training
         self.train_ann = "instances_train2017.json"
+        self.train_name = "train2017"
         # name of annotation file for evaluation
         self.val_ann = "instances_val2017.json"
+        self.val_name = "val2017"
         # name of annotation file for testing
         self.test_ann = "instances_test2017.json"
+        self.test_name = "test2017"
 
         # --------------- transform config ----------------- #
         # prob of applying mosaic aug
@@ -142,6 +145,7 @@ class Exp(BaseExp):
             data_dir=self.data_dir,
             json_file=self.train_ann,
             img_size=self.input_size,
+            name=self.train_name,
             preproc=TrainTransform(
                 max_labels=50,
                 flip_prob=self.flip_prob,
@@ -221,7 +225,7 @@ class Exp(BaseExp):
         return train_loader
 
     def random_resize(self, data_loader, epoch, rank, is_distributed):
-        tensor = torch.LongTensor(2).cuda()
+        tensor = torch.LongTensor(2).cuda() if torch.cuda.is_available() else torch.LongTensor(2)
 
         if rank == 0:
             size_factor = self.input_size[1] * 1.0 / self.input_size[0]
@@ -303,7 +307,7 @@ class Exp(BaseExp):
         return COCODataset(
             data_dir=self.data_dir,
             json_file=self.val_ann if not testdev else self.test_ann,
-            name="val2017" if not testdev else "test2017",
+            name=self.val_name if not testdev else self.test_name,
             img_size=self.test_size,
             preproc=ValTransform(legacy=legacy),
         )
