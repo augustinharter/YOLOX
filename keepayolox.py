@@ -7,6 +7,7 @@ from timeit import timeit
 from torchvision.ops import box_iou
 from torch.utils.data import DataLoader
 from torchvision.datasets import CocoDetection
+from yolox.utils.boxes import postprocess
 from yolox.data.datasets import COCO_CLASSES
 from yolox.utils import vis
 from yolox.exp.build import get_exp
@@ -21,15 +22,18 @@ from PIL import Image
 from torchvision.transforms import Normalize
 from torch.utils.mobile_optimizer import optimize_for_mobile
 import torchvision
+
 os.environ["PYTHONPATH"] = os.getcwd()
 # import bounding boxes drawer
 torch.set_printoptions(precision=2)
+CLASS_NAMES = []
+
 # %%
 def getBoxCornersFromCOCOBox(box):
     return (box[0], box[1], box[0]+box[2], box[1]+box[3])
 
 
-def custompostprocesssingle(prediction, num_classes, conf_thre=0.7, nms_thre=0.45, class_agnostic=False):
+def custompostprocesssingle(prediction, num_classes, conf_thre=0.7, nms_thre=0.45, class_agnostic=False, classconfscore=False):
     box_corner = prediction.new(prediction.shape).detach()
     box_corner[:, 0] = prediction[:, 0] - prediction[:, 2] / 2
     box_corner[:, 1] = prediction[:, 1] - prediction[:, 3] / 2
@@ -42,7 +46,7 @@ def custompostprocesssingle(prediction, num_classes, conf_thre=0.7, nms_thre=0.4
     # Get score and class with highest confidence
     class_conf, class_pred = torch.max(image_pred[:, 5: 5 + num_classes], 1, keepdim=True)
 
-    conf_mask = (image_pred[:, 4] >= conf_thre).squeeze()
+    conf_mask = (image_pred[:, 4] * (class_conf.squeeze() if classconfscore else 1)>= conf_thre).squeeze()
     #conf_mask = (image_pred[:, 4] * class_conf.squeeze() >= conf_thre).squeeze()
     # Detections ordered as (x1, y1, x2, y2, obj_conf, class_conf, class_pred)
     detections = torch.cat((image_pred[:, :5], class_conf,
@@ -71,8 +75,10 @@ def custompostprocesssingle(prediction, num_classes, conf_thre=0.7, nms_thre=0.4
 modeltype = "tiny"
 outputname = "yolox.ptl"
 #ckpt_file = f'{"yolox_"+modeltype}.pth'
-exp_file = None
 ckpt_file = f'{"yolox_"+modeltype+"_rpc"}.pth'
+ckpt_file = f'{"yolox_"+modeltype}.pth'
+ckpt_file = 'YOLOX_outputs/yolox_tiny_rpc/best_ckpt.pth'
+exp_file = None
 exp_file = f'{"exps/example/custom/yolox_"+modeltype+"_rpc"}.py'
 name = "yolox-"+modeltype
 '''
@@ -118,7 +124,12 @@ class Wrapper(torch.nn.Module):
 
     def forward(self, x):
         out = self.model(x)[0]
-        out = custompostprocesssingle(out, exp.num_classes, testconf, nmsthresh, True)
+
+        out = custompostprocesssingle(out, exp.num_classes, exp.test_conf, exp.nmsthre, 
+                                    class_agnostic= True, classconfscore=True)
+        #out = postprocess(
+        #            out[None], exp.num_classes, exp.test_conf, exp.nmsthre, class_agnostic=True
+        #        )[0]
         return out
 
 
@@ -138,7 +149,7 @@ print("generated torchscript mobile model at {}".format(outpath))
 mobilemod = optimized_traced_model
 mobilemod.eval()
 # %%
-# load jit model
+# load mobile model
 modelpath = f"/home/augo/coding/keepa/app/keepa_auth/assets/models/{outputname}"
 mobilemod = torch.jit.load(modelpath)
 mobilemod.eval()
@@ -166,12 +177,11 @@ print('img after normalize:',
 print(imgTensor.shape)
 # %% VISUALIZE
 def vis_wrap(out, img, confthresh=0.3, showscore=True):
+    print(out.shape)
     boxImg = vis(np.ascontiguousarray(img, dtype=np.uint8), out[:, 0:4], out[:, 4],  # *out[:,5],
                  out[:, 6], conf=confthresh, class_names=CLASS_NAMES, showscore=showscore)
     plt.imshow(boxImg)
     plt.show()
-
-
 # %%
 # RUN MODELS
 '''
@@ -198,7 +208,7 @@ vis_wrap(outs[2], img)
 '''
 preds = mobilemod(imgTensor)
 print(preds.shape)
-vis_wrap(preds, img)
+#vis_wrap(preds, img)
 #boxImg = vis(np.ascontiguousarray(img, dtype=np.uint8), preds[:, 0:4], preds[:, 4]*preds[:, 5],
 #             torch.ones_like(preds[:, 4]), conf=0.3, class_names=["", "car", "bike"])
 #plt.imshow(boxImg)
@@ -206,13 +216,15 @@ vis_wrap(preds, img)
 # %% EVAL
 imgtransform = torchvision.transforms.Compose(
     [
-        torchvision.transforms.Resize((416, 416)),
-        torchvision.transforms.ToTensor(),
-        torchvision.transforms.ConvertImageDtype(torch.float32),
-        torchvision.transforms.Normalize(
-            mean=0,
-            std=1/255.0,
-        ),
+        #torchvision.transforms.ToTensor(),
+        torchvision.transforms.Resize((416, 416), interpolation=Image.NEAREST),
+        torchvision.transforms.PILToTensor(),
+        lambda x: x.float(),
+        #lambda x: (x.float(),print(x.float()))[0],
+        #torchvision.transforms.Normalize(
+        #    mean=0,
+        #    std=1/255.0,
+        #),
     ]
 )
 
@@ -250,10 +262,11 @@ def calcMetrics(ious, preds, targets):
     mp = len(targets[targets != -1])
     return tp, fp, vp, mp
 
-def matchDetections(boxes, tboxes, target_labels, iouthresh=0.5, deplete_tlabels=True):
+def matchDetectionsWrong(boxes, tboxes, target_labels, iouthresh=0.5, deplete_tlabels=True):
     # calc ious
     ious = box_iou(boxes, tboxes)
     ious[ious < iouthresh] = 0
+    print(ious.shape)
     # initialize labels as VOID (-1)
     labels = torch.ones(len(boxes))*-1
     # iterate over all predictions
@@ -271,11 +284,31 @@ def matchDetections(boxes, tboxes, target_labels, iouthresh=0.5, deplete_tlabels
                     target_labels[hitidx] = -1
     return labels, target_labels
 
+def matchDetections(boxes, tboxes, tlabels, iouthresh=0.5, deplete_tlabels=True):
+    # calc ious
+    ious = box_iou(tboxes, boxes)
+    ious[ious < iouthresh] = 0
+    #print(ious.shape)
+    # initialize labels as VOID (-1)
+    plabels = torch.ones(len(boxes))*-1
+    # iterate over all targets
+    for i in range(len(tboxes)):
+        # check if there is a iou target for this prediction
+        if ious[i].any():
+            # get hit = best prediciton idx
+            hitidx = ious[i].argmax()
+            # save label for best prediction
+            plabels[hitidx] = int(tlabels[i])
+            if deplete_tlabels:
+                # mark target as used
+                tlabels[i] = -1
+    return plabels, tlabels
+
 #%%
+#splitname = 'test2019'
 datasetname = 'COCO'
-datasetname = 'retail_product_checkout'
 splitname = 'val2017'
-splitname = 'test2019'
+datasetname = 'retail_product_checkout'
 splitname = 'val2019'
 dataset = CocoDetection(
     root=f"/home/augo/data/{datasetname}/{splitname}/",
@@ -291,7 +324,7 @@ CLASS_NAMES = [c['name'] for (i, c) in enumerate(catsInfo)]
 dataloader = DataLoader(
     dataset,
     batch_size=1,
-    shuffle=True,
+    shuffle=False,
     collate_fn=lambda batch: tuple(zip(*batch)),
 )
 '''
@@ -308,8 +341,8 @@ print('dataset', len(dataset), 'dataloader', len(dataloader))
 #%%
 knn = None
 #%%
-feature_limit = 7+96
-conftresh = 0.1
+feature_limit = 7+(96*2)
+conftresh = 0.3
 iouthresh = 0.5
 timing = False
 timestamp = time()
@@ -317,22 +350,28 @@ rawx, rawy = [], []
 metrics = []
 with torch.no_grad():
     for i, (inputs, targets) in enumerate(dataloader):
-        inTensor = torch.stack(inputs)
-        img = inputs[0].permute(1, 2, 0)
+        inTensor = torch.stack(inputs).flip(1)
+        img = inTensor[0].permute(1, 2, 0)
+        #print(inTensor[0].flatten(), torch.std_mean(inTensor[0].flatten()), inTensor[0].max(), inTensor[0].min())
+
         if timing:
             print('batch', i, 'prepare inputs', time()-timestamp)
             timestamp = time()
+        #print("eval stats", inTensor.shape, inTensor.dtype, inTensor.max(), inTensor.min())
         out = jitmod(inTensor).detach()
         if timing:
             print('batch', i, 'forward pass', time()-timestamp)
             timestamp = time()
         out = out[out[:, 4] >= conftresh]
         pclasses = out[:, 6].int()
+
+        # KNN
         if out.shape[0] and knn:
             infeatures = out[:, 7:feature_limit].cpu().numpy()
             #idxs = [((torch.from_numpy(train_features) - af).sum(1)==0).int().argmax().item() for af in infeatures]
             pclasses = torch.from_numpy(knn.predict(infeatures)).int()
             #print(pclasses)
+
         # plt.imshow(img)
         # plt.show()
         tboxes = torch.Tensor([getBoxCornersFromCOCOBox(t['bbox']) for t in targets[0]])
@@ -342,13 +381,17 @@ with torch.no_grad():
         if timing:
             print('batch', i, 'formating targets', time()-timestamp)
             timestamp = time()
-
+        
+        if not (out.shape[0] and tout.shape[0]):
+            continue
         # collect ml train data
         rawx.append(out.cpu().numpy())
         rawy.append(tout.cpu().numpy())
-        vis_wrap(out, img, confthresh=0)
-        #vis_wrap(tout, img, confthresh=conftresh, showscore=False)
+        if targets[0][0]['image_id'] == 220:
+            vis_wrap(out, img, confthresh=conftresh)
+            vis_wrap(tout, img, confthresh=conftresh, showscore=False)
         
+        #print(tclasses.numpy(), '|', pclasses.numpy())
         # MATCH AND EVAL PREDICTIONS
         matchedTargets, allTargets = matchDetections(out[:, :4].clone(), tboxes.clone(), tclasses.clone(), 
             iouthresh=iouthresh, deplete_tlabels=True)
@@ -377,12 +420,14 @@ with torch.no_grad():
             print(f'b{i} knn={knn}:  \
                 \n tp {summed[0]}, fp {summed[1]}, mp {summed[2]}, tvp {summed[3]}, vp {summed[4]}, total {base} targets {summed[5]} \
                 \n prec = {round((summed[0]+summed[3])/(summed[0]+summed[3]+summed[4]+summed[1]), 3)} = (tp+tvp) ÷ (tp+tvp+vp+fp) \
-                \n recall = {round((summed[0])/(summed[0]+summed[1]+summed[2]), 3)} = (tp) ÷ (tp+fp+mp)')
+                \n recall = {round((summed[0])/(summed[0]+summed[1]+summed[2]), 3)} = (tp) ÷ (tp+fp+mp) \
+                \n obj-prec {round( (summed[0]+summed[1])/(summed[0]+summed[1]+summed[2]), 3)}')
 
 np.save(f'{splitname}-rawx.npy', np.array(rawx, dtype=object))
 np.save(f'{splitname}-rawy.npy', np.array(rawy, dtype=object))
+print(f"saved raw data with name {splitname}-rawx.npy and {splitname}-rawy.npy")
 #%% LOAD RAW ML DATA
-splitname = 'train'
+splitname = 'val2019'
 rawx = np.load(f'{splitname}-rawx.npy', allow_pickle=True)
 rawy = np.load(f'{splitname}-rawy.npy', allow_pickle=True)
 print("loaded raw data")
@@ -390,6 +435,7 @@ cleanmask = [e.shape[0]>0 for e in rawy]
 rawx = [rawx[i] for i in range(len(rawx)) if cleanmask[i]]
 rawy = [rawy[i] for i in range(len(rawy)) if cleanmask[i]]
 print(sum(cleanmask), 'clean samples out of', len(cleanmask))
+
 #%% PROCESS RAW ML DATA
 # get labels
 boxes = [e[:, 0:4] for e in rawx]
@@ -402,34 +448,56 @@ labels = [matchDetections(torch.from_numpy(b), torch.from_numpy(tb),
 # flatten
 features = np.concatenate(rawx, axis=0)[:,7:feature_limit]
 labels = np.concatenate(labels, axis=0)
-print('done processing')
+print('done processing', features.shape)
 
 #%% SAVE ML DATA
 np.save(f'{splitname}-features.npy', features)
 np.save(f'{splitname}-labels.npy', labels)
 
 #%% LOAD ML DATA
-splitname = 'train'
+splitname = 'val2019'
 features = np.load(f'{splitname}-features.npy')
 labels = np.load(f'{splitname}-labels.npy')
-#%% split data
-train_percent = 1#0 if splitname == 'val' else 1
-train_size = int(len(features) * train_percent)
-train_features = features[:train_size]
-train_labels = labels[:train_size]
-test_features = features[train_size:]
-test_labels = labels[train_size:]
-print(int(len(train_features)* train_percent), "train images for all 80 classes with",
-    len(train_labels), "detections =>\n", len(train_labels)/80, "detections per class")
-print(int(len(train_features)* (1-train_percent)), "test images for all 80 classes with",
-    len(test_labels), "detections =>\n", len(test_labels)/80, "detections per class")
+print('loaded features', features.shape)
 
-#%% train
-knn = neighbors.KNeighborsClassifier(n_neighbors=5)
-knn.fit(train_features, train_labels)
 #%% EVAL KNN
-#print('score', knn.score(test_features, test_labels))
-print('score', knn.score(train_features, train_labels))
+splits = [0.01, 0.02, 0.05, 0.1]
+nneighbs = [1, 3, 5]
+scores = []
+for nneigh in nneighbs:
+    for train_percent in splits:
+        # shuffle features array
+        order = np.arange(len(features))
+        np.random.shuffle(order)
+        features = features[order]
+        labels = labels[order]
+        train_size = int(len(features) * train_percent)
+        train_features = features[:train_size]
+        train_labels = labels[:train_size]
+        test_features = features[train_size:]
+        test_labels = labels[train_size:]
+        print(int(len(rawx)* train_percent), "train images for all 80 classes with",
+            len(train_labels), "detections =>\n", len(train_labels)/80, "detections per class")
+        print(int(len(rawx)* (1-train_percent)), "test images for all 80 classes with",
+            len(test_labels), "detections =>\n", len(test_labels)/80, "detections per class")
+
+        knn = neighbors.KNeighborsClassifier(n_neighbors=nneigh)#, weights='distance')
+        knn.fit(train_features, train_labels)
+
+        print('train score', knn.score(train_features, train_labels))
+        testscore = knn.score(test_features, test_labels)
+        print('test score', testscore)
+        scores.append(testscore)
+knn_scores = np.split(np.array(scores), len(nneighbs))
+for i,score in enumerate(knn_scores):
+    plt.scatter([f'{s}' for s in splits], score, label=f'knn={nneighbs[i]}')
+plt.xlabel('train percent')
+plt.ylabel('test score')
+plt.ylim(0,1)
+plt.title(f' KNN score vs. train percent')
+plt.legend(loc='lower right')
+plt.savefig(f'knn_score_vs_train_percent_{splitname}.png')
+plt.show()
 # %% Seems like batching is not speeding it up
 nruns = 10
 inTensor = torch.rand(8, 3, 416, 416)

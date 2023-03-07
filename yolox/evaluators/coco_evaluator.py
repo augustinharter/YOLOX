@@ -10,14 +10,16 @@ import tempfile
 import time
 from collections import ChainMap, defaultdict
 from loguru import logger
+from matplotlib import pyplot as plt
 from pandas import infer_freq
 from tabulate import tabulate
 from tqdm import tqdm
 from itertools import islice
-
 import numpy as np
 
 import torch
+from yolox.utils.visualize import vis
+#from keepayolox import vis_wrap
 
 from yolox.data.datasets import COCO_CLASSES
 from yolox.utils import (
@@ -160,16 +162,25 @@ class COCOEvaluator:
 
         for cur_iter, (imgs, _, info_imgs, ids) in islice(enumerate(
             progress_bar(self.dataloader)
-        ), 5000):
+        ), 10000):
             with torch.no_grad():
+                def vis_wrap(out, img, confthresh=0.3, showscore=True):
+                    print(out.shape)
+                    boxImg = vis(np.ascontiguousarray(img, dtype=np.uint8), out[:, 0:4], out[:, 4],  # *out[:,5],
+                                out[:, 6], conf=confthresh, class_names=range(200), showscore=showscore)
+                    plt.imshow(boxImg)
+                    plt.show()
+                def getBoxCornersFromCOCOBox(box):
+                    return (box[0], box[1], box[0]+box[2], box[1]+box[3])
                 imgs = imgs.type(tensor_type)
-                #print(imgs.shape, imgs.dtype)
+                print(ids, info_imgs)
 
                 # skip the last iters since batchsize might be not enough for batch inference
                 is_time_record = cur_iter < len(self.dataloader) - 1
                 if is_time_record:
                     start = time.time()
 
+                #print('decoder', decoder, "eval stats", imgs.shape, imgs.dtype, imgs.max(), imgs.min())
                 outputs = model(imgs)
                 if decoder is not None:
                     outputs = decoder(outputs, dtype=outputs.type())
@@ -180,8 +191,12 @@ class COCOEvaluator:
                     #print("INFERENCE", infer_end-start)
 
                 outputs = postprocess(
-                    outputs, self.num_classes, self.confthre, self.nmsthre
+                    outputs, self.num_classes, self.confthre, self.nmsthre, class_agnostic=True
                 )
+                print(imgs[0].flatten(), torch.std_mean(imgs[0].flatten()), imgs[0].max(), imgs[0].min())
+                vis_wrap(outputs[0], imgs[0].permute(1, 2, 0), 0.30, True)
+                #vis_wrap(tout, imgs[0].permute(1, 2, 0), 0.30, True)
+                #print(self.num_classes, self.confthre, self.nmsthre)
                 if is_time_record:
                     nms_end = time_synchronized()
                     nms_time += nms_end - infer_end
@@ -230,6 +245,7 @@ class COCOEvaluator:
             bboxes /= scale
             cls = output[:, 6]
             scores = output[:, 4] * output[:, 5]
+            #print(scores.shape, scores)
 
             image_wise_data.update({
                 int(img_id): {
@@ -241,7 +257,7 @@ class COCOEvaluator:
                     ],
                 }
             })
-
+            #print(list(self.dataloader.dataset.class_ids[int(cls[ind])] for ind in range(bboxes.shape[0])))
             bboxes = xyxy2xywh(bboxes)
 
             for ind in range(bboxes.shape[0]):
